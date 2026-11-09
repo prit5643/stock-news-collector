@@ -1,9 +1,4 @@
-"""Collect recent stock-market news from RSS feeds.
-
-The scraper is safe to run without credentials: it prints collected items as JSON.
-When SUPABASE_URL and SUPABASE_KEY are provided, it upserts the items into the
-Supabase `news` table.
-"""
+"""Collect recent NSE Bharat Electronics (BEL) news and store it in Supabase."""
 
 from __future__ import annotations
 
@@ -13,13 +8,16 @@ import sys
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from urllib.error import HTTPError, URLError
-from urllib.parse import urljoin
+from urllib.parse import quote, urljoin
 from urllib.request import Request, urlopen
 import xml.etree.ElementTree as ET
 
-FEEDS = (
-    "https://feeds.finance.yahoo.com/rss/2.0/headline?s=%5EGSPC,%5EDJI,%5EIXIC&region=US&lang=en-US",
-    "https://www.investing.com/rss/news_25.rss",
+STOCK_SYMBOL = "BEL"
+STOCK_NAME = "Bharat Electronics"
+FEED_URL = (
+    "https://news.google.com/rss/search?q="
+    + quote(f"NSE {STOCK_SYMBOL} {STOCK_NAME}")
+    + "&hl=en-IN&gl=IN&ceid=IN:en"
 )
 
 
@@ -41,7 +39,7 @@ def fetch_feed(feed_url: str) -> list[dict[str, str]]:
         except (TypeError, ValueError, OverflowError):
             published_at = datetime.now(timezone.utc).isoformat()
 
-        source = (item.findtext("source") or "").strip() or feed_url.split("/")[2]
+        source = (item.findtext("source") or "").strip() or "Google News"
         summary = (item.findtext("description") or "").strip()
         items.append(
             {
@@ -79,28 +77,15 @@ def save_to_supabase(items: list[dict[str, str]]) -> None:
 
 
 def main() -> int:
-    collected: list[dict[str, str]] = []
-    failures: list[str] = []
-    for feed_url in FEEDS:
-        try:
-            collected.extend(fetch_feed(feed_url))
-        except (HTTPError, URLError, ET.ParseError, TimeoutError) as error:
-            failures.append(f"{feed_url}: {error}")
-
-    unique_items = {item["url"]: item for item in collected}
-    items = list(unique_items.values())
-    print(json.dumps(items, ensure_ascii=True, indent=2))
-
-    if failures and not items:
-        for failure in failures:
-            print(f"Feed error: {failure}", file=sys.stderr)
+    try:
+        items = list({item["url"]: item for item in fetch_feed(FEED_URL)}.values())
+    except (HTTPError, URLError, ET.ParseError, TimeoutError) as error:
+        print(f"Feed error: {error}", file=sys.stderr)
         return 1
 
+    print(json.dumps(items, ensure_ascii=True, indent=2))
     save_to_supabase(items)
-    if failures:
-        for failure in failures:
-            print(f"Feed warning: {failure}", file=sys.stderr)
-    print(f"Collected {len(items)} news items.", file=sys.stderr)
+    print(f"Collected {len(items)} {STOCK_SYMBOL} ({STOCK_NAME}) news items.", file=sys.stderr)
     return 0
 
 
