@@ -1,0 +1,26 @@
+name: Stock News Collector
+
+on:
+  schedule:
+    - cron: "0 * * * *"      # runs every hour
+  workflow_dispatch:          # gives you a manual Run button
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the scraper
+        run: |
+          pip install crawl4ai
+          crawl4ai-setup
+
+      - name: Run the scraper
+        env:
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python scrape.py
