@@ -17,10 +17,9 @@ jobs:
 
       - name: Install the scraper
         run: |
-          pip install crawl4ai
-          crawl4ai-setup
+          pip install pymongo
 
       - name: Run the scraper
         env:
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
         run: python scrape.py

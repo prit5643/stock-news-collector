@@ -1,4 +1,4 @@
-"""Collect recent NSE Bharat Electronics (BEL) news and store it in Supabase."""
+"""Collect recent NSE Bharat Electronics (BEL) news and store it in MongoDB Atlas."""
 
 from __future__ import annotations
 
@@ -12,6 +12,8 @@ from urllib.parse import quote, urljoin
 from urllib.request import Request, urlopen
 import xml.etree.ElementTree as ET
 
+from pymongo import ASCENDING, MongoClient, ReplaceOne
+
 STOCK_SYMBOL = "BEL"
 STOCK_NAME = "Bharat Electronics"
 FEED_URL = (
@@ -19,25 +21,29 @@ FEED_URL = (
     + quote(f"NSE {STOCK_SYMBOL} {STOCK_NAME}")
     + "&hl=en-IN&gl=IN&ceid=IN:en"
 )
+NEWS_DATABASE = "stock_news"
+NEWS_COLLECTION = "news"
+NEWS_TTL_SECONDS = 7776000  # 90 days
 
 
-def fetch_feed(feed_url: str) -> list[dict[str, str]]:
+def parse_published(published: str) -> datetime:
+    try:
+        return parsedate_to_datetime(published).astimezone(timezone.utc)
+    except (TypeError, ValueError, OverflowError):
+        return datetime.now(timezone.utc)
+
+
+def fetch_feed(feed_url: str) -> list[dict[str, object]]:
     request = Request(feed_url, headers={"User-Agent": "stock-news-collector/1.0"})
     with urlopen(request, timeout=30) as response:
         root = ET.fromstring(response.read())
 
-    items: list[dict[str, str]] = []
+    items: list[dict[str, object]] = []
     for item in root.findall(".//item"):
         title = (item.findtext("title") or "").strip()
         link = (item.findtext("link") or "").strip()
         if not title or not link:
             continue
-
-        published = (item.findtext("pubDate") or "").strip()
-        try:
-            published_at = parsedate_to_datetime(published).astimezone(timezone.utc).isoformat()
-        except (TypeError, ValueError, OverflowError):
-            published_at = datetime.now(timezone.utc).isoformat()
 
         source = (item.findtext("source") or "").strip() or "Google News"
         summary = (item.findtext("description") or "").strip()
@@ -47,33 +53,26 @@ def fetch_feed(feed_url: str) -> list[dict[str, str]]:
                 "url": urljoin(feed_url, link),
                 "source": source,
                 "summary": summary,
-                "published_at": published_at,
+                "published_at": parse_published((item.findtext("pubDate") or "").strip()),
             }
         )
     return items
 
 
-def save_to_supabase(items: list[dict[str, str]]) -> None:
-    supabase_url = os.environ.get("SUPABASE_URL", "").rstrip("/")
-    supabase_key = os.environ.get("SUPABASE_KEY", "")
-    if not supabase_url and not supabase_key:
+def save_to_mongodb(items: list[dict[str, object]]) -> None:
+    mongo_uri = os.environ.get("MONGODB_URI", "")
+    if not mongo_uri:
         return
-    if not supabase_url or not supabase_key:
-        raise RuntimeError("SUPABASE_URL and SUPABASE_KEY must be set together")
 
-    request = Request(
-        f"{supabase_url}/rest/v1/news?on_conflict=url",
-        data=json.dumps(items).encode("utf-8"),
-        headers={
-            "apikey": supabase_key,
-            "Authorization": f"Bearer {supabase_key}",
-            "Content-Type": "application/json",
-            "Prefer": "resolution=merge-duplicates,return=minimal",
-        },
-        method="POST",
+    client = MongoClient(mongo_uri, serverSelectionTimeoutMS=10000)
+    collection = client[NEWS_DATABASE][NEWS_COLLECTION]
+    collection.create_index([("url", ASCENDING)], unique=True)
+    collection.create_index(
+        [("published_at", ASCENDING)], expireAfterSeconds=NEWS_TTL_SECONDS
     )
-    with urlopen(request, timeout=30):
-        pass
+    collection.bulk_write(
+        [ReplaceOne({"url": item["url"]}, item, upsert=True) for item in items]
+    )
 
 
 def main() -> int:
@@ -83,8 +82,8 @@ def main() -> int:
         print(f"Feed error: {error}", file=sys.stderr)
         return 1
 
-    print(json.dumps(items, ensure_ascii=True, indent=2))
-    save_to_supabase(items)
+    print(json.dumps(items, default=str, ensure_ascii=True, indent=2))
+    save_to_mongodb(items)
     print(f"Collected {len(items)} {STOCK_SYMBOL} ({STOCK_NAME}) news items.", file=sys.stderr)
     return 0
 
